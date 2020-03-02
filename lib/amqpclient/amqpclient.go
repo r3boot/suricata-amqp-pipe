@@ -78,7 +78,6 @@ func (as *AmqpWriter) Write(logdata chan []byte) error {
 		select {
 		case event := <-logdata:
 			{
-				event_s := string(event)
 				err := as.Channel.Publish(
 					as.Exchange, // exchange to use
 					"",          // key to use for routing
