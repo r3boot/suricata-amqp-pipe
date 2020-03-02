@@ -79,7 +79,6 @@ func (as *AmqpWriter) Write(logdata chan []byte) error {
 		case event := <-logdata:
 			{
 				event_s := string(event)
-				log.Printf("AmqpWriter.Ship: Sending event to AMQP: %s", event_s)
 				err := as.Channel.Publish(
 					as.Exchange, // exchange to use
 					"",          // key to use for routing
