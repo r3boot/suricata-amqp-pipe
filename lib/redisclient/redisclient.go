@@ -2,6 +2,7 @@ package redisclient
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/r3boot/suricata-amqp-pipe/lib/config"
 
@@ -58,6 +59,8 @@ func (r *RedisReader) Read(logdata chan []byte) {
 				data, err := r.Client.LPop("suricata").Result()
 				if err == nil {
 					logdata <- []byte(data)
+				} else {
+					time.Sleep(1.0)
 				}
 			}
 		}
