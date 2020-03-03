@@ -40,6 +40,11 @@ func NewAmqpWriter(cfg config.AmqpConfig) (*AmqpWriter, error) {
 		Done:     make(chan bool, 1),
 	}
 
+	err := writer.Connect()
+	if err != nil {
+		return nil, err
+	}
+
 	return writer, nil
 }
 
@@ -91,6 +96,8 @@ func (w *AmqpWriter) TryToReconnect() {
 			w.Setinhibit(false)
 			break
 		}
+
+		time.Sleep(5 * time.Second)
 	}
 }
 

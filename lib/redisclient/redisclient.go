@@ -19,7 +19,6 @@ type RedisReader struct {
 }
 
 func NewRedisReader(cfg config.RedisConfig) (*RedisReader, error) {
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
 	reader := &RedisReader{
 		Config:  cfg,
@@ -28,18 +27,28 @@ func NewRedisReader(cfg config.RedisConfig) (*RedisReader, error) {
 		Done:    make(chan bool, 1),
 	}
 
-	reader.Client = redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: cfg.Password,
-		DB:       cfg.Database,
-	})
-
-	_, err := reader.Client.Ping().Result()
+	err := reader.Connect()
 	if err != nil {
-		return nil, fmt.Errorf("NewRedisClient: %v", err)
+		return nil, err
 	}
 
 	return reader, nil
+}
+
+func (r *RedisReader) Connect() error {
+	addr := fmt.Sprintf("%s:%d", r.Config.Host, r.Config.Port)
+	r.Client = redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: r.Config.Password,
+		DB:       r.Config.Database,
+	})
+
+	_, err := r.Client.Ping().Result()
+	if err != nil {
+		return fmt.Errorf("RedisClient.Connect: %v", err)
+	}
+
+	return nil
 }
 
 func (r *RedisReader) Setinhibit(newValue bool) {
@@ -52,17 +61,10 @@ func (r *RedisReader) Setinhibit(newValue bool) {
 }
 
 func (r *RedisReader) TryToReconnect() {
-	addr := fmt.Sprintf("%s:%d", r.Config.Host, r.Config.Port)
 	for {
 		log.Printf("Trying to reconnect to redis")
 
-		r.Client = redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Password: r.Config.Password,
-			DB:       r.Config.Database,
-		})
-
-		_, err := r.Client.Ping().Result()
+		err := r.Connect()
 		if err == nil {
 			log.Printf("Reconnected to redis")
 			r.Setinhibit(false)
