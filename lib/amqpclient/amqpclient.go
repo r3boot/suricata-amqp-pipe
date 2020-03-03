@@ -4,71 +4,97 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/r3boot/suricata-amqp-pipe/lib/config"
 	"github.com/streadway/amqp"
 )
 
 type AmqpWriter struct {
-	Name       string
 	Type       string
 	Url        string
 	Exchange   string
 	Queue      amqp.Queue
 	Channel    *amqp.Channel
 	Connection *amqp.Connection
+	Config     config.AmqpConfig
+	inhibit    bool
 	Control    chan int
 	Done       chan bool
 }
 
 func NewAmqpWriter(cfg config.AmqpConfig) (*AmqpWriter, error) {
-	var err error
-
 	user := cfg.Username
 	pass := cfg.Password
 	host := cfg.Host
 	port := strconv.Itoa(cfg.Port)
 
 	url := "amqp://" + user + ":" + pass + "@" + host + ":" + port
-	as := &AmqpWriter{
-		Name:     cfg.Name,
+	writer := &AmqpWriter{
+		Config:   cfg,
 		Type:     "suricata",
 		Url:      url,
+		inhibit:  false,
 		Exchange: cfg.Exchange,
 		Control:  make(chan int, 1),
 		Done:     make(chan bool, 1),
 	}
 
-	as.Connection, err = amqp.Dial(as.Url)
-	if err != nil {
-		return nil, fmt.Errorf("NewAmqpWriter amqp.Dial: %v", err)
-	}
-
-	as.Channel, err = as.Connection.Channel()
-	if err != nil {
-		return nil, fmt.Errorf("NewAmqpWriter Connection.Channel: %v", err)
-	}
-
-	err = as.Channel.ExchangeDeclare(
-		cfg.Exchange, // Name of exchange
-		"fanout",     // Type of exchange
-		true,         // Durable
-		false,        // Auto-deleted
-		false,        // Internal queue
-		false,        // no-wait
-		nil,          // Arguments
-	)
-	if err != nil {
-		return nil, fmt.Errorf("NewAmqpWriter: Channel.ExchangeDeclare: %v", err)
-	}
-
-	return as, nil
+	return writer, nil
 }
 
-func (as *AmqpWriter) Write(logdata chan []byte) error {
-	defer as.Channel.Close()
-	defer as.Connection.Close()
+func (w *AmqpWriter) Connect() error {
+	var err error
 
+	w.Connection, err = amqp.Dial(w.Url)
+	if err != nil {
+		return fmt.Errorf("NewAmqpWriter amqp.Dial: %v", err)
+	}
+
+	w.Channel, err = w.Connection.Channel()
+	if err != nil {
+		return fmt.Errorf("NewAmqpWriter Connection.Channel: %v", err)
+	}
+
+	err = w.Channel.ExchangeDeclare(
+		w.Config.Exchange, // Name of exchange
+		"fanout",          // Type of exchange
+		true,              // Durable
+		false,             // Auto-deleted
+		false,             // Internal queue
+		false,             // no-wait
+		nil,               // Arguments
+	)
+	if err != nil {
+		return fmt.Errorf("NewAmqpWriter: Channel.ExchangeDeclare: %v", err)
+	}
+
+	return nil
+}
+
+func (w *AmqpWriter) Setinhibit(newValue bool) {
+	w.inhibit = newValue
+	if w.inhibit {
+		log.Printf("AMQP inhibited, not forwarding any new events\n")
+	} else {
+		log.Printf("AMQP uninhibited, forwarding events again\n")
+	}
+}
+
+func (w *AmqpWriter) TryToReconnect() {
+	for {
+		log.Printf("Trying to reconnect to AMQP\n")
+
+		err := w.Connect()
+		if err == nil {
+			log.Printf("Reconnected to AMQP\n")
+			w.Setinhibit(false)
+			break
+		}
+	}
+}
+
+func (w *AmqpWriter) Write(logdata chan []byte) error {
 	stop_loop := false
 	for {
 		if stop_loop {
@@ -76,24 +102,7 @@ func (as *AmqpWriter) Write(logdata chan []byte) error {
 		}
 
 		select {
-		case event := <-logdata:
-			{
-				err := as.Channel.Publish(
-					as.Exchange, // exchange to use
-					"",          // key to use for routing
-					false,       // mandatory
-					false,       // immediate
-					amqp.Publishing{
-						ContentType: "application/json",
-						Body:        event,
-					},
-				)
-				if err != nil {
-					log.Printf("WARNING: AmqpWriter.Ship Channel.Publish: %v", err)
-					continue
-				}
-			}
-		case cmd := <-as.Control:
+		case cmd := <-w.Control:
 			{
 				switch cmd {
 				case config.CmdCleanup:
@@ -103,10 +112,40 @@ func (as *AmqpWriter) Write(logdata chan []byte) error {
 					}
 				}
 			}
+		case event := <-logdata:
+			{
+				if !w.inhibit {
+					err := w.Channel.Publish(
+						w.Exchange, // exchange to use
+						"",         // key to use for routing
+						false,      // mandatory
+						false,      // immediate
+						amqp.Publishing{
+							ContentType: "application/json",
+							Body:        event,
+						},
+					)
+					if err != nil {
+						log.Printf("WARNING: Failed to forward to AMQP\n")
+						err = w.Channel.Close()
+						if err != nil {
+							log.Printf("WARNING: Failed to close AMQP channel\n")
+						}
+						err = w.Connection.Close()
+						if err != nil {
+							log.Printf("WARNING: Failed to close AMQP connection\n")
+						}
+						w.Setinhibit(true)
+						go w.TryToReconnect()
+					}
+				} else {
+					time.Sleep(1 * time.Second)
+				}
+			}
 		}
 	}
 
-	as.Done <- true
+	w.Done <- true
 
 	return nil
 }
